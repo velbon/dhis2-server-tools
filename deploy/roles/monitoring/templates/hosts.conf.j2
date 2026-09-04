@@ -1,17 +1,11 @@
-# Munin hosts.
-{#
-{% for host in munin_hosts %}
-[{{ host.name }}]
-    address {{ host.address }}
-{% if host.extra is defined %}
-{% for extra in host.extra %}
-    {{ extra }}
-{% endfor %}
-{% endif %}
-{% endfor %}
-#}
-{% for host in groups['all'] %}
+{% for host in ansible_play_hosts_all if  host != '127.0.0.1'  and  hostvars[host]["instance_state"] is not defined %}
 [{{ host }}]
-    address {{hostvars[host]['ansible_host']}}
+    address {{ hostvars[host]['service_ip'] | default(hostvars[host]['ansible_host']) }}
     use_node_name yes
 {% endfor %}
+
+{% if ansible_connection == "lxd" %}
+[host]
+    address {{ lxd_network.split('/')[0] }}
+    use_node_name yes
+{% endif %}

@@ -1,322 +1,370 @@
-# dhis2-server-tools
+Table of contents
+---
+<!-- vim-markdown-toc GFM -->
 
-This tools install DHIS2 application stack with ansible. The stack is comprised
-of dhis2 tomcat instance(s), database(postgresql), proxy (nginx/apache2) and
-monitoring (munin).
-Ths installation can be single server or on multiple servers. Single server setup is using lxd. 
+* [Introduction](#introduction)
+* [Installation with LXD containers](#installation-with-lxd-containers)
+	* [Step 0 — Before you start](#step-0--before-you-start)
+	* [Step 1 — SSH to your server (where you want to install DHIS2) and enable firewall.](#step-1--ssh-to-your-server-where-you-want-to-install-dhis2-and-enable-firewall)
+	* [Step 2 — Grab the deployment tools from github](#step-2--grab-the-deployment-tools-from-github)
+	* [Step 3 —  Create inventory hosts file](#step-3---create-inventory-hosts-file)
+	* [Step 4 — Set fqdn, email, and timezone](#step-4--set-fqdn-email-and-timezone)
+	* [Step 5 — The Install](#step-5--the-install)
+* [Install on physical/virtual servers.](#install-on-physicalvirtual-servers)
+	* [Step 1: Before you start, make sure you have the following:](#step-1-before-you-start-make-sure-you-have-the-following)
+	* [Step 2: Access deployment server (ansible-controller) via SSH](#step-2-access-deployment-server-ansible-controller-via-ssh)
+	* [Step 3: Install ansible on the deployment server](#step-3-install-ansible-on-the-deployment-server)
+	* [Step 4: Grab deployment tools from github](#step-4-grab-deployment-tools-from-github)
+	* [Step 5: Create hosts file (from the hosts template)](#step-5-create-hosts-file-from-the-hosts-template)
+	* [Step 6: Set fqdn, email, timezone and `ansible_connection=ssh`](#step-6-set-fqdn-email-timezone-and-ansible_connectionssh)
+	* [Step 7:  Ensure connection to the managed hosts works](#step-7--ensure-connection-to-the-managed-hosts-works)
+	* [Step 8: Run the playbook](#step-8-run-the-playbook)
+* [Adding a new instance](#adding-a-new-instance)
+* [Using a Custom TLS Certificate](#using-a-custom-tls-certificate)
+* [Conclusion](#conclusion)
+* [Other important links](#other-important-links)
 
-1. setup on a single ubuntu server<br> 
-    Uses lxd containers, set `ansible_connection` to `lxd`.
-2. Setup on multiple servers.<br> 
-    dhis2 application stack, i.e database, apps,monitor and proxy are setup on
-    on separate virtual machines or servers. 
+<!-- vim-markdown-toc -->
+---
 
-## Pre-requisites
-Before you start installation, you will need -:,
-* fqdn (fully qualified domain name). <br>
-  It should be mapped to server or proxy public ip address depending on your setup. <br> 
-* ubuntu server running 20.04 or 22.04. 
-* SSL/TLS certificate - The installation defaults to obtaining SSL/TLS
-  certificate from letsencrypt, you can also bring your own.  
-* good internet on the severs.
-## Installation
-The process of installation involves pulling deployment code from git and
-setting a few variables/parameters to suit your environment. Of the importance
-is `fqdn`,`email` and `ansible_connection,` other config parameters can be left in their defaults.  
-1. single server
-    * ansible_connection should be set to *lxd* 
-    * dhis2 and its components will be installed on *lxd* containers. 
-    * deployment happens from within the server, you do not need separate deployment server. 
+## Introduction 
+This is a quick DHIS2 install guide using [ansible](https://www.ansible.com/). At the end, you will have
+one or more dhis2 instances running, configured with postgreSQL database and
+nginx or apache2 proxy. Out of the box, you'll benefit from comprehensive application and server resource monitoring with Glowroot APM (Application Performance Monitoring) and a Munin instance. 
 
-2. multiple servers environment setup. 
-    * `ansible_connection` should be set to `ssh`
-    *  A separate deployment server is a requirement, it should be able to
-       access all the other servers via ssh 
+At the moment, the tools support two deployment architectures:
+- [Installation with LXD containers](#installation-with-lxd-containers) (single server)
+- [Installation on physical/virtual servers](#install-on-physicalvirtual-servers) (multiple servers)
 
-### Step1 :- Install ansible and other dependencies.
-#### environment setup. 
-_**NOTE:** In case of multiple server setup, this happens on the deployment server._ <br> 
-update and upgrade system packages <br>
-```
-sudo apt -y update
-sudo apt -y upgrade
-```
-Ensure git is installed. <br>
-`sudo apt install -y git`
+You can also do a hybrid of both. [Read more on Architectures](./docs/Deployment-Architectures.md)
 
-Install ansible version **_2.11_** or above, to work with community.general modules.
+## Installation with LXD containers
+### Step 0 — Before you start
+Ensure you have:
+- Linux server, minimum 4GB RAM, 2 CPU cores
+  - Ubuntu 22.04 or
+  - Ubuntu 24.04 
+- SSH Access to the server
+- A non-root user with sudo privileges.
 
-```
-sudo apt install -y  software-properties-common
-sudo apt-add-repository --yes --update ppa:ansible/ansible
-sudo apt install -y ansible
-sudo apt-get install -y python3-netaddr
-```
-Install community.general ansible modules, required for lxd_container, ufw and other modules <br>
-`ansible-galaxy collection install community.general -f`
+### Step 1 — SSH to your server (where you want to install DHIS2) and enable firewall. 
+- SSH to your server, Secure/harden SSH, allow SSH port on the firewall and
+  finally enable the firewall. Be careful not to lock yourself out. Remember to
+  allow your preferred ssh port before enabling the firewall. 
+  ```
+  sudo ufw limit 22 # Assuming you did not change default ssh port (22)
+  sudo ufw enable
+  ```
 
-### Step2 :- Pull ansible deployment code from git
-`git clone https://github.com/dhis2/dhis2-server-tools`
+### Step 2 — Grab the deployment tools from github
+- Access the server and clone the deployment tools in your preferred directory by invoking below command
+  ```
+  git clone https://github.com/dhis2/dhis2-server-tools.git
+  ```
 
-### Step3:- Customization before installation
-Change the directory to the project directory
-```
-cd dhis2-server-tools/deploy
-```
-edit the file  `./inventory/hosts`. The file has a list
-of hosts, which can be physical, virtual servers or lxd containers depending on
-your setup architecture and configuration parameters. 
-#### hosts configuration 
-Change ip address for these hosts to suite network environment. <br>
-_**NOTE**: `When the install is on a single host with lxd, ensure your
-lxd_network is unique and  not overlaping with any of your already existing
-host network.`_ <br> 
+### Step 3 —  Create inventory hosts file
+- Create the `hosts` file using the already existing template,
+  `hosts.template`. <br>
+  Use the command below if you are in the directory you cloned the tools in.
+  ```
+  cp dhis2-server-tools/deploy/inventory/{hosts.template,hosts}
+  ```
 
-Use an editor of your choice, here we are using vim, you could use `nano` as well. <br> 
-`vim ./inventory/hosts`
-
-##### Sample host configuration 
-```
-[proxy]
-proxy       ansible_host=192.168.0.2 
-[databases]
-postgres    ansible_host=192.168.0.20
-[instances]
-hmis  ansible_host=192.168.0.10  database_host=postgres  
-[monitoring]
-```
-####  Configuration parameters 
-dhis2-server-tools configurations are located on the same inventory file , i.e 
-`dhis2-server-tools/deploy/inventory/hosts`.
-
-Below is a list of available configuration parameters, of importance is fqdn and email, ( mail required for letsencrypt cert expiry notification )
-##### important configuration parameters 
-Your proxy setup will need these two variables be set for it to work. 
-* `fqdn` this is the domain used to access dhis2 application 
-* `email` This is an email used to generate letsencrypt certificate and letsencrypt expiration emails
-* `ansible_connection` parameter is also a requirement, it defaults to `lxd`, however is you are setting up dhis2 over ssh, on multiple servers you'll need to change it to `ssh`
-
-_Important: dhis2 is designed to work on the dedicated domain. You can use
-either a domain like yourdomain.com or a subdomain of any level. During the
-installation, the install checks the existence of the domain name entered
-(otherwise proxy setup is aborted). Therefore, you need to create and setup a
-(sub)domain so it is resolved to an external IP address of your server._
-
-##### optional parameters 
-* `proxy=nginx`  here you specify proxy software of your choice, can be nginx
-  or apache2 default is nginx, only nginx supported for now. 
-* `SSL_TYPE=letsencrypt` this parameter enables to specify whether you'd want
-  to use `letsencrypt` or your own `customssl` certificate, defaults is
-  letsencrypt 
-* `timezone=Africa/Nairobi` You set this variable to your home/city's time zone. 
-
-* `lxd_network="192.168.0.1/24"`, here you define a network which your
-  containers will be created into.
-* `lxd_bridge_interface=lxdbr0`, the name of the created lxd bridge
-* `create_db=yes` , whether dhis2 install should create new db or not, 
-* `JAVA_VERSION="11"` version of java to be install, defaults to java11
-* `dhis2_war_file` This is were you specify dhis2 war file, its can be a
-  url or a file,the file full path must be specified, alternatively, you can
-  place the file in
-  dhis2-server-tools/deploy/dhis2/files directory and you'll not be required to
-  specify its path but just the name. 
-* `database_host=postgres` this is the database server that the instance should
-  use, defaults to postgres. Must be also defined on you inventory file. 
-
-#### hosts grouping
-The host are grouped into categories below, 
-* `[proxy]` - These are the servers that are used to access dhis2 application
-  from the outside. Public ip address is mapped to this host. In most cases
-  it’s just a single host but you can have multiple servers as well.
-* `[database]` - This is a group of servers that are used to host the databases,
-  which is postgresql in our case. It can be one or many as well.
-* `[instances]` - Servers intended for installing dhis2 web  application will be
-  under this group.
-* `[monitoring]`  - Servers intended for monitoring.
-
-
-### Step4: The installation
-#### DHIS2 setup on a single host with lxd 
-To install dhis2 on a single server (lxd), ensure your ansible_connection
-parameter is set to `lxd` <br>
-`ansible_connection=lxd` <br>
-Navigate to the deploy directory, `cd dhis2-server-tools/deploy/` <br>
-Run below two playbooks on the host where you'll be setting up dhis2, remember,
-ensure you are on `deploy` directory for the scripts to work.
-
-`sudo ansible-playbook lxd_setup.yml`    # this sets up lxd environment., -K is
-for privilege escalation <br>
-`sudo ansible-playbook dhis2.yml` # this deploys the app on lxd containers <br>
-
-#### DHIS2 install on multiple servers
-You'll need a deployment server for this architecture, it is from the
-deployment server that you'll be running your ansible scripts. It needs to have
-ssh connection to the other hosts.  Ensure ansible_connection parameter is set
-to ssh, i.e` ansible_connection=ssh` then run the playbook below, and ip
-addresses of the hosts are correctly configured on the inventory file.  You'll
-run your script, again from within deploy directory, navigate into it with `cd`
-command. <br> and run below ansible command to begin your installation. 
-
-`ansible-playbook dhis2.yml -u <ssh_user> -Kk`
-
-NOTE: Since connection used is ssh, you'll need to pass connection parameters
-on the command line, i.e ssh_user with `-u`, ssh_password with `-k` and
-become_password  with `-K`. For this to work, ssh connection from the
-deployment server should be working, perhaps you'll need to test the connection
-before the installation. 
-
-## Using a Custom SSL Certificate 
-##### ENSURE YOU HAVE SSL/TLS Certificate and key beforehand
-For HTTPS connection, the install used Letsencrypt to obtain an SSL/TLS certificate. This
-should work fine most OS and browsers, however, these scripts provides a way of
-using your own SSL/TLS certificates. To use your own custom SSL/TLS certs, follow below steps, 
-
-1. Get/generate `fullchain.pem` file which will be concatenating your certificate
-   and any other intermediate and root certificates.
-2. Get/generate `privkey.pem` file, this contains private key used for certificate signing.
-3. Copy these two files into `dhis2-server-tools/deploy/roles/proxy/files/` directory.
-4. edit `dhis2-server-tools/deploy/inventory/hosts` and change `SSL_TYPE`  to `customssl` 
-
-To start using a custom certificate instead of the default Letsencrypt
-certificate, you need to switch off the certbot service in the `/deploy/inventory/hosts` 
-configuration and ensure you have both `fullchain.pem` and `private.pem` files
-
-## Customizing postgresql
-Installed postgresql database comes with default settings which should be fine
-and working at this stage. However, these settings can be changed a bit for
-performance optimization and maximum utilization of the available system
-resources. Before optimizing anything, you will need to know resources you have
-first, i.e, total RAM  available, use `free -h` for that.
-
-#### limiting  RAM exposed to postgresql container, only applies for lxd setup
-Deciding how much RAM to dedicate to postgresql depends a little on how many
-DHIS2 instances you are likely to run, but assuming you will have a production
-instance and perhaps a small test instance,if you gave a total of say 32GB,
-giving 16GB exclusively to postgresql is a reasonable start.
-
-`sudo lxc config set postgresql limits.memory 16GB`
-
-running `free -gh` inside the postgresql container you will see that it no
-longer can see the full amount of RAM, but has been confined to 16GB. (try sudo
-lxc exec postgres -- free -gh).
-
-#### Editing postgresql configuration, applies for both both lxd and ssh setup.
-
-Depending on your setup, postgresql can be on either the containers or on its own server,
-To access the container  `sudo lxc exec postgres bash`
-
-Access postgresql server from the deployment server with `ssh ssh_user@postgresql_server_ip -p ssh_port`
-
-The file where all your custom settings are made is called `/etc/postgresql/13/main/postgresql.conf`
-The default contents of this file is shown below:
-
-```
-# Postgresql settings for DHIS2
-
-# Adjust depending on number of DHIS2 instances and their pool size
-# By default each instance requires up to 80 connections
-# This might be different if you have set pool in dhis.conf
-max_connections = 200
-
-# Tune these according to your environment
-# About 25% available RAM for postgres
-# shared_buffers = 3GB
-
-# Multiply by max_connections to know potentially how much RAM is required
-# work_mem=20MB
-
-# As much as you can reasonably afford.  Helps with index generation
-# during the analytics generation task
-# maintenance_work_mem=512MB
-
-# Approx 80% of (Available RAM - maintenance_work_mem - max_connections*work_mem)
-# effective_cache_size=8GB
-
-# This setting is suitable for good SSD disk.  For slower spinning disk consider
-# changing to 4
-random_page_cost = 1.1
-
-checkpoint_completion_target = 0.8
-synchronous_commit = off
-log_min_duration_statement = 300s
-max_locks_per_transaction = 1024
+### Step 4 — Set fqdn, email, and timezone
+- Edit `dhis2-server-tools/deploy/inventory/hosts` file and set `fqdn`, and `email`
+  if you have any (you can leave them empty if you do not have).
+- Set your preferred `timezone`, you can leave other settings to their set defaults. 
+  ```
+  vim dhis2-server-tools/deploy/inventory/hosts
+  ```
+  Below is an example screenshot
+```ini
+# variables applying to all hosts,
+[all:vars]
+# if you do not set fqdn, you dhis2 will be set up with self-signed certificate
+fqdn=your-domain.example.com
+# required for LetsEncrypt certificate notification.
+email=your-email@example.com
+# timedatectl list-timezones to list timezones
+# Example: timezone=Africa/Nairobi
+timezone=your-timezone
+# Options: lxd, ssh defaults to lxd.
+ansible_connection=lxd
 ```
 
-The 4 settings that you should uncomment and give values to are
-`shared_buffers, work_mem, maintenance_work_mem` and `effective_cache_size`.
-If your database have say, 16GB of RAM reserved, It will be reasonable having
-below settings
-```
-shared_buffers = 4GB
-work_mem=20MB
-maintenance_work_mem=1GB
-effective_cache_size=11GB
-```
-For these changes to take effect, to restart the database and the dhis2 in that
-order, for lxd setup, just restarting the containers restarts the apps. 
-#### lxd setup restart example 
-```
-sudo lxc stop <dhis2_container>
-sudo lxc restart postgres
-sudo lxc start covid19
-```
+  _**NOTE**: When the installation is on a single host with LXD, ensure your lxd_network is unique and not overlapping with any of your host network._ 
 
-#### application management on the distributed architecture. 
-for dhis2 setup in a distributed architecture, you'll have to logging to the
-individual server and restart respective application. 
-to restart postgres database, login to the server via ssh and run the command
-below, 
+###  Step 5 — The Install
+- Run `deploy.sh` script from within `dhis2-server-tools/deploy/` directory. 
+  ```
+  cd dhis2-server-tools/deploy/
+  sudo ./deploy.sh
+  ```
+- After the script finishes running (without errors), access your DHIS2, Glowroot and Munin monitoring instances:
+  > **Note:** `<hostname>` = your `fqdn` if defined, otherwise your server's IP address. When `fqdn` is set, that public URL is written to `/opt/dhis2/dhis.conf` as `server.base.url` (override with `server_base_url` if users reach a different name).
+  ```
+  https://<hostname>/dhis
+  https://<hostname>/dhis-glowroot
+  https://<hostname>/munin
+  ```
 
-   ```
-   systemctl  stop  postgresql
-   systemctl  start   postgresql
-   systemctl  restart postgresql # this restarts the database with a sigle command 
-   ```
-To restart dhis2 instance, login to the server and use systemctl to restart
-tomcat service by either stopping and starting or restarting with a single
-command. 
-   ```
-   systemctl  stop tomcat9 
-   systemctl  start tomcat9 
-   ```
-You can restart with below single command<br>
- `systemctl  restart tomcat9` 
-   
+## Install on physical/virtual servers.
+### Step 1: Before you start, make sure you have the following:
+- A deployment server - This server is going to be your ansible-controller.<br>DHIS2
+  setup on the backend application server will be done from here. We will be using
+  deployment server and ansible-controller interchangeably in this guide. 
+  - It should run either Ubuntu 22.04 or 24.04 
+  - It should have working and tested SSH access to the managed hosts (backend
+    application servers). SSH key-based authentication is advisable<br> 
+    Deployment will be working with SSH connection. 
 
-Postgresql is an extremely customizable  database with multiple configuration
-parameters. This brief installation guide only touches on the most important
-tunables.
+    ```mermaid
+    graph LR
+        A[Deployment Server<br/>Ansible Controller] -->|ssh| B[Database Server<br/>PostgreSQL]
+        A -->|ssh| C[DHIS2<br/>Application Server]
+        A -->|ssh| D[Proxy<br/>Nginx/Apache2]
+        A -->|ssh| E[Monitoring Server<br/>Munin]
+        F["./inventory/<br/>- hosts<br/>- group_vars<br/>- host_vars"] -.-> A
+        subgraph Managed Hosts
+            B
+            C
+            D
+            E
+        end
+    ```
+- Backend Servers (managed hosts) - These are the servers that will be running
+  your DHIS2 components, i.e database(PostgreSQL, DHIS2, Monitoring, Proxy)
+  - They all should be running Ubuntu 22.04 or 24.04 
+  - Be accessible (via ssh) from the deployment server.
 
-## lxd container operation
-lxd environment offers `lxc` command line tool which can be used to manage and
-administer containers 
+### Step 2: Access deployment server (ansible-controller) via SSH 
+- SSH to the ansible-controller, Secure/Harden ssh, allow SSH port on the firewall,
+  and finally enable the firewall. Be careful not to lock yourself out.
+  Remember to allow your preferred SSH port before enabling the firewall.
 
-listing containers <br>
-`lxc list`
-```
-+----------+---------+---------------------+------+-----------+-----------+
-|   NAME   |  STATE  |        IPV4         | IPV6 |   TYPE    | SNAPSHOTS |
-+----------+---------+---------------------+------+-----------+-----------+
-| dhis2    | RUNNING | 192.168.0.10 (eth0) |      | CONTAINER | 0         |
-+----------+---------+---------------------+------+-----------+-----------+
-| monitor  | RUNNING | 192.168.0.30 (eth0) |      | CONTAINER | 0         |
-+----------+---------+---------------------+------+-----------+-----------+
-| postgres | RUNNING | 192.168.0.20 (eth0) |      | CONTAINER | 0         |
-+----------+---------+---------------------+------+-----------+-----------+
-| proxy    | RUNNING | 192.168.0.2 (eth0)  |      | CONTAINER | 0         |
-+----------+---------+---------------------+------+-----------+-----------+
-| training | RUNNING | 192.168.0.12 (eth0) |      | CONTAINER | 0         |
-p----------+---------+---------------------+------+-----------+-----------+
-```
-stop a container <br>
-`lxc stop <container_name>`
+  ```
+  sudo ufw limit 22 # Assuming you did not change default SSH port (22)
+  sudo ufw enable
+  ```
 
-restart container <br> 
-`lxc restart <container_name>`
+### Step 3: Install ansible on the deployment server
+  ```
+  sudo apt -y update
+  sudo apt install -y software-properties-common
+  sudo apt-add-repository --yes --update ppa:ansible/ansible
+  sudo apt install -y ansible
+  ```
 
-deletes a container<br>
-`lxc delete <container_name>`
-## MONITORING
-By default the script implements monitoring with munin and glowroot. Munin is
-for server monitoring whereas glowroot is for tomcat application monitoring.  
+### Step 4: Grab deployment tools from github
+-  Access the server and clone the deployment tools in your preferred directory by invoking below command 
+  ```
+  git clone https://github.com/dhis2/dhis2-server-tools
+  ```
 
+### Step 5: Create hosts file (from the hosts template) 
+- Create the hosts file using the already existing template, hosts.template.
+  Use the command below if you are in the directory you cloned the tools in.
+  ```
+  cp dhis2-server-tools/deploy/inventory/{hosts.template,hosts}
+  ```
+
+### Step 6: Set fqdn, email, timezone and `ansible_connection=ssh`
+- Edit the inventory hosts file and configure the following variables:
+  - `fqdn` — your domain name. Leave empty if you don't have one (DHIS2 will use a self-signed certificate)
+  - `email` — for LetsEncrypt certificate notifications
+  - `timezone` — use `timedatectl list-timezones` to list available options
+  - `ansible_connection=ssh` — **required** for physical/virtual server deployments
+  ```
+  vim dhis2-server-tools/deploy/inventory/hosts
+  ```
+  ```ini
+  # variables applying to all hosts,
+  [all:vars]
+  # if you do not set fqdn, you dhis2 will be set up with self-signed certificate
+  fqdn=your-domain.example.com
+  # required for LetsEncrypt certificate notification.
+  email=your-email@example.com
+  # timedatectl list-timezones to list timezones
+  # Example: timezone=Africa/Nairobi
+  timezone=your-timezone
+  # Options: lxd, ssh defaults to lxd.
+  ansible_connection=ssh
+  ```
+
+### Step 7:  Ensure connection to the managed hosts works
+- [Read More on how you can configure SSH](./docs/SSH-Connection.md)
+- You will need to setup SSH connection from your deployment server to your backend application servers. 
+- Both password or key-based authentication would work. Key-based authentication
+  is encouraged if you want your deployment to run fully automated (no prompts
+  for SSH passwords). Use ansible ping module to test your connection to all the
+  backend hosts except localhost (127.0.0.1)
+
+  ```
+  cd dhis2-server-tools/deploy/
+  ansible 'all:!127.0.0.1' -m ping 
+  ```
+  If your SSH connection is successful, you will see SUCCESS messages like below:
+  ```json
+  dhis | SUCCESS => {
+      "ansible_facts": {
+          "discovered_interpreter_python": "/usr/bin/python3"
+      },
+      "changed": false,
+      "ping": "pong"
+  }
+  monitor | SUCCESS => {
+      "ansible_facts": {
+          "discovered_interpreter_python": "/usr/bin/python3"
+      },
+      "changed": false,
+      "ping": "pong"
+  }
+  ```
+  
+### Step 8: Run the playbook
+- Since installing packages on the remote server needs sudo, you will be using `-K` or `--ask-become-pass` 
+  ```
+  cd dhis2-server-tools/deploy/
+  ansible-playbook dhis2.yml -u=username  --ask-become-pass --ask-pass
+  ```
+<table>
+<tr>
+    <th style="text-align: left; vertical-align: top;">Description</th>
+  </tr>
+  <td>
+  <code>-k or --ask-pass </code><span>&#8212;</span> prompts for SSH password <br>
+  <code>-K or --ask-become-pass</code><span>&#8212;</span> enables sudo password prompt, you can set <code>ansible_sudo_pass=STRONG_PASSWORD</code> to avoid prompts <br>
+  <code>-u</code><span>&#8212;</span> username for SSH connection </td> </tr>
+</table>
+
+NOTE:
+- When your SSH connection is based on keys, there's no need for the `-k` flag
+- If you don't specify an SSH username, it will automatically use currently logged in username.
+
+- After the playbook finishes running (without errors), access your DHIS2, Glowroot and Munin monitoring instances:
+  > **Note:** `<hostname>` = your `fqdn` if defined, otherwise your server's IP address. When `fqdn` is set, that public URL is written to `/opt/dhis2/dhis.conf` as `server.base.url` (override with `server_base_url` if users reach a different name).
+  ```
+  https://<hostname>/dhis
+  https://<hostname>/dhis-glowroot
+  https://<hostname>/munin
+  ```
+
+## Adding a new instance 
+- Edit the inventory hosts file by running the command below and add an entry line under `[instances]`
+  category, ensure the instance name and the value of `ansible_host` (instance private IP) are unique. 
+  ```
+  vim dhis2-server-tools/deploy/inventory/hosts 
+  ```
+- Example
+  ```ini
+  [web]
+  proxy  ansible_host=172.19.2.2
+
+  # database servers/containers
+  [databases]
+  postgres  ansible_host=172.19.1.20
+
+  # dhis2 servers/containers
+  [instances]
+  hmis      ansible_host=172.19.2.11  database_host=postgres  dhis2_version=2.39 proxy_rewrite=True
+  training  ansible_host=172.19.2.12  database_host=postgres  dhis2_version=2.39
+  # <-- add new instance here
+
+  # monitoring server/container
+  [monitoring]
+  monitor   ansible_host=172.19.2.30
+  ```
+
+- re-run the installation as explained on [Step 5 — The
+  Install](#step-5--the-install) or [Step 7: Run the
+  playbook](#step-8-run-the-playbook) depending on your deployment
+  architecture. 
+
+## Using a Custom TLS Certificate 
+
+- You will need to have two files, named `customssl.crt` and `customssl.key`.<br>
+  `customssl.crt` should contain the main certificate concatenated with intermediate and
+   root certificates.
+-  Copy these two files into `dhis2-server-tools/deploy/roles/create-instance/files/` directory, preserving their names.
+- Edit hosts file and set `TLS_TYPE=customssl`
+  ```
+  vim dhis2-server-tools/deploy/inventory/hosts
+  ```
+  ```ini
+  # Options: nginx, apache2 defaults to nginx
+  proxy=nginx
+
+  # Options: letsencrypt, customssl, default(letsencrypt)
+  SSL_TYPE=customssl
+  ```
+- re-run the installation as explained on [Step 5 — The
+  Install](#step-5--the-install) or [Step 7: Run the
+  playbook](#step-8-run-the-playbook) depending on your deployment
+  architecture. 
+
+## Conclusion
+At this point you should have DHIS2 up and running.
+
+> **Note:** `<hostname>` = your `fqdn` if defined, otherwise your server's IP address. When `fqdn` is set, that public URL is written to `/opt/dhis2/dhis.conf` as `server.base.url`.
+
+- **DHIS2** — `https://<hostname>/dhis`
+- **Glowroot** — `https://<hostname>/dhis-glowroot` ([glowroot.org](https://glowroot.org/) for application performance monitoring)
+- **Munin** — `https://<hostname>/munin` ([munin-monitoring.org](https://munin-monitoring.org/) for server resource monitoring)
+  - If you changed `munin_base_path`: `https://<hostname>/<your_munin_base_path>`
+
+> **Default credentials:** Username: `admin` / Password: `district`
+>
+> **Important:** Change these default passwords immediately after your first login.
+
+
+## Other important links 
+- [Supported variables ](./docs/Variables.md)
+- [Hosts and hosts grouping ](./docs/Inventory-Host-File.md)
+- [Optimizing PostgreSQL](./docs/Optimizing-PostgreSQL.md)
+- [LXC container management](./docs/Basic-LXC-container-Management.md)
+- [Service management with systemctl](./docs/Systemd-Service-Management.md)
+- [SSH connection](./docs/SSH-Connection.md)
+
+## Current Deployment: epi.riah.dev
+This section documents the live configuration of the instance deployed from this checkout, for operators maintaining this specific server. It is derived from `deploy/inventory/hosts` and verified against the running system.
+
+### Architecture
+Single-server LXD deployment (`ansible_connection=lxd`) on Ubuntu 24.04, `lxd_network=172.19.2.1/24` on `lxdbr1`.
+
+| Container  | Role                    | Internal IP   | Key ports                      |
+|------------|-------------------------|---------------|---------------------------------|
+| `proxy`    | Apache2 reverse proxy   | 172.19.2.2    | 80 (HTTP→HTTPS redirect), 443 (TLS) |
+| `postgres` | PostgreSQL 16           | 172.19.2.20   | 5432 (internal only)            |
+| `dhis`     | DHIS2 2.40 on Tomcat 10 | 172.19.2.11   | 8080 (app, proxied at `/dhis`), 4000 (Glowroot APM, proxied at `/dhis-glowroot`) |
+| `monitor`  | Munin server            | 172.19.2.30   | web UI proxied at `/munin`, node port 4949 |
+
+### Configuration highlights (`deploy/inventory/hosts`)
+- `fqdn=epi.riah.dev`, `TLS_TYPE=letsencrypt` — public TLS certificate issued via certbot, auto-renewal cronjob installed.
+- `proxy=apache2`.
+- `dhis2_version=2.40`, `java_version=17`, `dhis2_auto_upgrade=false` — upgrades must be applied manually by bumping `dhis2_version` and re-running `deploy.sh`.
+- `postgresql_version=16`.
+- `server_monitoring=munin`, `app_monitoring=glowroot`.
+- `wireguard_enabled=false` — Munin, Glowroot, and PostgreSQL are reachable without a VPN hop (mitigated by UFW rules and container network isolation; see recommendations below).
+- `unattended_upgrades=yes` — OS package security updates are applied automatically inside the `dhis` container.
+
+### Host firewall (UFW)
+- Default policy: deny incoming, allow outgoing/routed.
+- SSH has been moved from port 22 to **port 822** (`Port 822` in `/etc/ssh/sshd_config`), rate-limited via `ufw limit`.
+- Traffic on `lxdbr1` (container bridge) is allowed, so inter-container communication (proxy → dhis → postgres) works.
+- Port `4949/tcp` (Munin node) is restricted to the `monitor` container's IP only.
+- Ports 80/443 are opened on the `proxy` container via the LXD network forward created by the `pre-install` role.
+
+### Access endpoints
+- DHIS2: `https://epi.riah.dev/dhis`
+- Glowroot APM: `https://epi.riah.dev/dhis-glowroot`
+- Munin: `https://epi.riah.dev/munin`
+
+### Security recommendations
+1. **Rotate the default DHIS2 admin credentials immediately.** The `admin` / `district` login is currently active and was used to run this deployment's smoke test — treat it as compromised and change it via the DHIS2 UI or `/api/me` password-change endpoint.
+2. **Do not re-expose SSH on port 22.** It's already moved to 822; keep it there and avoid adding a duplicate `Port 22` line in `/etc/ssh/sshd_config` or an `sshd_config.d/*.conf` drop-in, since OpenSSH honors the first `Port` directive found.
+3. **Enable WireGuard (`wireguard_enabled=true`)** to restrict Munin, Glowroot, and PostgreSQL to VPN-only access instead of relying solely on UFW rules — this removes an entire class of exposure if a UFW rule is ever misconfigured.
+4. **Restrict or authenticate Munin/Glowroot** at the Apache layer if WireGuard is not enabled, since both expose operational/internal detail.
+5. **Confirm `sshd -t` passes and `sshd` was reloaded** after any manual edits to `sshd_config` (e.g. via `nano`) — edits alone don't take effect until the service is restarted.
+6. **Review `pg_hba.conf`** on `postgres` periodically; the deploy only opens access from the `dhis` instance, but confirm no broader entries have been added over time.
+7. **Keep `dhis2_auto_upgrade=false` intentional** — since it's off, DHIS2 patch releases (including security fixes) require a manual `dhis2_version` bump and re-deploy; track upstream release notes.
+8. **Verify Let's Encrypt renewal** (`certbot renew --dry-run` on `proxy`) periodically even though a cronjob is installed, to catch silent renewal failures before certificate expiry.

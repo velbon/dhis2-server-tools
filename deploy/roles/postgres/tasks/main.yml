@@ -1,9 +1,5 @@
 ---
-# Can either be ssh or lxd related tasks
-- include_tasks: "{{ ansible_connection }}.yml"
+- name: Including tasks | {{ ansible_connection }}
+  ansible.builtin.include_tasks: "{{ ansible_connection }}.yml"
   when: inventory_hostname in groups['databases']
-
-# installing posgresql database
-- include_tasks: postgresql_install.yml
-  when: inventory_hostname in groups['databases']
-  
+  tags: [postgresql-install, postgresql-conf]

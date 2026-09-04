@@ -1,0 +1,37 @@
+---
+- name: Install python3-passlib
+  ansible.builtin.apt:
+    name: python3-passlib
+    state: present
+
+- name: Detect proxy worker user from config
+  ansible.builtin.shell: |
+    # OpenResty uses nginx.conf as its main config file
+    conf_file="/etc/{{ proxy }}/{{ proxy }}.conf"
+    if [ ! -f "$conf_file" ]; then
+      conf_file="/usr/local/openresty/nginx/conf/nginx.conf"
+    fi
+    grep -E '^\s*user\s+' "$conf_file" | awk '{print $2}' | tr -d ';' | head -1
+  register: _proxy_worker_user
+  changed_when: false
+  check_mode: false
+
+
+- name: Set proxy_user fact
+  ansible.builtin.set_fact:
+    _htpasswd_group: "{{ _proxy_worker_user.stdout | default('www-data') | trim or 'www-data' }}"
+
+- name: "Munin authenticatin, defaults: Username: admin, password: district"
+  community.general.htpasswd:
+    path: "{{ '/usr/local/openresty/nginx/conf/.htpasswd' if proxy == 'openresty' else '/etc/' + proxy + '/.htpasswd' }}"
+    name: "{{ item.name }}"
+    password: "{{ item.password }}"
+    owner: root
+    group: "{{ _htpasswd_group }}"
+    mode: "0640"
+    state: "{{ item.state | default(omit) }}"
+  loop: "{{ munin_users | default([{'name': 'admin', 'password': 'district'}]) }}"
+  loop_control:
+    label: "{{ item.name }}"
+  notify: Reload {{ proxy | capitalize }}
+  tags: [securing-munin]

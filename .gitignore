@@ -1,11 +1,28 @@
+.idea/
 .DS_Store
-fullchain.pem
-privkey.pem
-.stignore
-.stversions/
-notes.sh
-create_containers.yml
-notes
-test*
-*.vim
-*.war
+.vscode/
+.ansible/
+hosts
+releases.json
+env/
+venv/
+.venv/
+.claude/
+
+# Ignore all files in deploy/inventory/host_vars/ and deploy/inventory/group_vars/
+# but allow .template files
+deploy/inventory/host_vars/*
+!deploy/inventory/host_vars/*.template
+deploy/inventory/group_vars/*
+!deploy/inventory/group_vars/*.template
+!deploy/inventory/group_vars/all/
+deploy/inventory/group_vars/all/*
+!deploy/inventory/group_vars/all/vars.yml
+deploy/filter_plugins/__pycache__/
+
+# Testing artifacts
+.molecule/
+.cache/
+*.pyc
+__pycache__/
+molecule/*/tests/__pycache__/

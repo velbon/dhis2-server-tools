@@ -1,0 +1,119 @@
+---
+- name: Checking postgresql Version
+  become: true
+  become_user: postgres
+  community.postgresql.postgresql_info:
+    filter: ver*
+  register: postgresql_version_info
+
+# could not use pg_hba module, its not replacing a line with host with hostssl
+- name: Edit pg_hba.conf permissions, allowing instances to connect
+  become: true
+  ansible.builtin.lineinfile:
+    path: /etc/postgresql/{{ postgresql_version_info.version.major }}/main/pg_hba.conf
+    insertafter: EOF
+    regexp: "^(host|hostssl)\\s+{{ item }}\\s+{{ item }}\\s+{{ hostvars[item]['service_ip'] | default(hostvars[item]['ansible_host']) }}(/32)?\\s+.*$"
+    line: hostssl     {{ item }}    {{ item }}  {{ hostvars[item]['service_ip'] | default(hostvars[item]['ansible_host']) }}/32  scram-sha-256
+  loop: "{{ groups['instances'] }}"
+  when:
+    - hostvars[item]['instance_state'] is undefined
+    - inventory_hostname == hostvars[item]['database_host']
+    - lxd_host_ip is undefined
+    - item in ansible_play_hosts
+  notify: Reload Postgres
+
+- name: Firewall | Open port 5432 from dhis2 instances
+  community.general.ufw:
+    rule: allow
+    port: "{{ postgresql_port | default('5432') }}"
+    src: "{{ hostvars[item]['service_ip'] | default(hostvars[item]['ansible_host']) }}"
+    proto: tcp
+    comment: "Allow access from {{ item }} instance "
+    state: enabled
+  loop: "{{ groups['instances'] }}"
+  when:
+    - hostvars[item]['instance_state'] is undefined
+    - item in ansible_play_hosts
+    - inventory_hostname == hostvars[item]['database_host']
+    - lxd_host_ip is undefined
+
+- name: Edit pg_hba.conf permissions, instances lxd_host_ip
+  become: true
+  ansible.builtin.lineinfile:
+    path: /etc/postgresql/{{ postgresql_version_info.version.major }}/main/pg_hba.conf
+    # regexp: '^host\s+({{ item }}).*$'
+    regexp: "^(host|hostssl)\\s+{{ item }}\\s+{{ item }}\\s+{{ lxd_host_ip }}(/32)?\\s+.*$"
+    insertafter: EOF
+    line: hostssl     {{ item }}    {{ item }}   {{ lxd_host_ip }}/32  scram-sha-256
+  loop: "{{ groups['instances'] }}"
+  when:
+    - hostvars[item]['instance_state'] is undefined
+    - item in ansible_play_hosts
+    - inventory_hostname == hostvars[item]['database_host']
+    - lxd_host_ip is defined
+  notify: Reload Postgres
+
+- name: Firewall | Open port 5432 from lxd_host_ip
+  community.general.ufw:
+    rule: allow
+    port: "{{ postgresql_port | default('5432') }}"
+    src: "{{ lxd_host_ip }}"
+    proto: tcp
+    comment: Allow access from {{ lxd_host_ip }}
+    state: enabled
+  loop: "{{ groups['instances'] }}"
+  when:
+    - hostvars[item]['instance_state'] is undefined
+    - item in ansible_play_hosts
+    - inventory_hostname == hostvars[item]['database_host']
+    - lxd_host_ip is defined
+
+- name: "Create instances database role:"
+  become: true
+  become_user: postgres
+  community.postgresql.postgresql_user:
+    name: "{{ item }}"
+    state: present
+    password: "{{ hostvars[item]['db_password'] }}"
+  loop: "{{ groups['instances'] }}"
+  when:
+    - hostvars[item]['instance_state'] is undefined
+    - item in ansible_play_hosts
+    - hostvars[item]['db_password'] is defined
+    - inventory_hostname == hostvars[item]['database_host']
+  notify: Reload Postgres
+
+- name: Creating dhis2 database/databases
+  become: true
+  become_user: postgres
+  community.postgresql.postgresql_db:
+    name: "{{ item }}"
+    state: present
+    owner: "{{ item }}"
+  loop: "{{ groups['instances'] }}"
+  when:
+    - hostvars[item]['instance_state'] is undefined
+    - item in ansible_play_hosts
+    - inventory_hostname == hostvars[item]['database_host']
+  notify: Reload Postgres
+
+- name: creating postgis,btree_gin and pg_trgm extensions
+  become: true
+  become_user: postgres
+  community.postgresql.postgresql_ext:
+    db: "{{ loop_item.0 }}"
+    name: "{{ loop_item.1 }}"
+  with_nested:
+    - "{{ groups['instances'] }}"
+    - "{{ postgresql_extensions }}"
+  when:
+    - loop_item.0 in ansible_play_hosts
+    - hostvars[loop_item.0]['db_password'] is defined
+    - inventory_hostname == hostvars[loop_item.0]['database_host']
+  loop_control:
+    loop_var: loop_item
+    label: "{{ loop_item.1 }}"
+  notify: Reload Postgres
+
+- name: Flushing Handlers
+  ansible.builtin.meta: flush_handlers

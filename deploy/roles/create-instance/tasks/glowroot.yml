@@ -1,0 +1,114 @@
+---
+- name: Get latest glowroot release info
+  ansible.builtin.command:
+    cmd: wget -q -O - https://api.github.com/repos/glowroot/glowroot/releases/latest
+  register: glowroot_release_info
+  changed_when: false
+
+- name: Set glowroot latest version
+  ansible.builtin.set_fact:
+    glowroot_latest_version: "{{ (glowroot_release_info.stdout | from_json).tag_name }}"
+
+
+- name: Check if glowroot directory exists
+  ansible.builtin.stat:
+    path: /opt/glowroot
+  register: glowroot_dir
+
+- name: Check installed glowroot version file
+  ansible.builtin.stat:
+    path: /opt/glowroot/.version
+  register: glowroot_version_file
+
+- name: Read installed glowroot version
+  ansible.builtin.slurp:
+    src: /opt/glowroot/.version
+  register: glowroot_installed_version
+  when: glowroot_version_file.stat.exists
+
+- name: Set glowroot needs update fact
+  ansible.builtin.set_fact:
+    glowroot_needs_update: "{{ not glowroot_dir.stat.exists or (glowroot_version_file.stat.exists and (glowroot_installed_version.content | b64decode | trim) != glowroot_latest_version) }}"
+
+- name: Download glowroot zip
+  ansible.builtin.command:
+    cmd: >
+      wget -q -O /tmp/glowroot-dist.zip
+      "https://github.com/glowroot/glowroot/releases/download/{{ glowroot_latest_version }}/glowroot-{{ glowroot_latest_version | regex_replace('^v', '') }}-dist.zip"
+  when: glowroot_needs_update
+
+- name: Remove old glowroot directory
+  ansible.builtin.file:
+    path: /opt/glowroot
+    state: absent
+  when: glowroot_needs_update
+
+- name: Extract glowroot
+  ansible.builtin.unarchive:
+    src: /tmp/glowroot-dist.zip
+    dest: /opt/
+    owner: root
+    group: tomcat
+    remote_src: true
+    mode: "0770"
+    exclude:
+      - glowroot/lib/glowroot-central-collector-https-osx.jar
+      - glowroot/lib/glowroot-central-collector-https-windows.jar
+  when: glowroot_needs_update
+
+- name: Save installed glowroot version
+  ansible.builtin.copy:
+    content: "{{ glowroot_latest_version }}"
+    dest: /opt/glowroot/.version
+    mode: "0644"
+  when: glowroot_needs_update
+
+- name: Clean up glowroot zip
+  ansible.builtin.file:
+    path: /tmp/glowroot-dist.zip
+    state: absent
+  when: glowroot_needs_update
+
+- name: Find jar files in /opt/glowroot directory
+  ansible.builtin.find:
+    path: "/opt/glowroot/"
+    recurse: true
+    depth: 2
+    patterns:
+      - "*.jar"  # search all files ending with .jar
+    excludes:
+      - plugin-pointcuts.jar
+  register: glowroot_jar_files
+
+- name: Change ownership and permissions of found jar files in /opt/glowroot/lib
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    owner: root
+    group: tomcat
+    mode: '0640'
+  loop: "{{ glowroot_jar_files.files }}"
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: Check if /opt/glowroot/admin.json file exists
+  ansible.builtin.stat:
+    path: /opt/glowroot/admin.json
+  register: glowroot_admin_file_status
+
+- name: Copy glowroot configs to the instances
+  ansible.builtin.template:
+    src: glowroot_admin.json
+    dest: /opt/glowroot/admin.json
+    owner: root
+    group: tomcat
+    mode: "0660"
+  when: not glowroot_admin_file_status.stat.exists
+  notify: Restart Tomcat
+
+- name: Configure glowroot basepath
+  ansible.builtin.lineinfile:
+    path: /opt/glowroot/admin.json
+    regexp: '^(.*)"contextPath"'
+    line: '\1"contextPath": "{{ "/glowroot" if dhis2_base_path | default(inventory_hostname) | to_fixed_string == "ROOT" else "/" + dhis2_base_path | default(inventory_hostname) | to_fixed_string + "-glowroot" }}",'
+    backrefs: true
+  notify: Restart Tomcat

@@ -1,0 +1,113 @@
+---
+- name: Updating and Upgrading packages
+  ansible.builtin.apt:
+    upgrade: "yes"
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Installing prometheus
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+    name:
+      - prometheus
+      - apt-transport-https
+      - software-properties-common
+      - wget
+
+- name: Ensure the keyring directory exists
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: '0755'
+
+- name: Download and add Grafana GPG key
+  ansible.builtin.get_url:
+    url: https://apt.grafana.com/gpg.key
+    dest: /etc/apt/trusted.gpg.d/grafana.asc
+    mode: '0644'
+
+- name: Add Grafana APT repository
+  ansible.builtin.apt_repository:
+    repo: "deb [signed-by=/etc/apt/trusted.gpg.d/grafana.asc] https://apt.grafana.com stable main"
+    state: present
+    filename: grafana
+    update_cache: true
+
+- name: Installing grafana
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+    name:
+      - grafana
+
+- name: Ensure prmetheus and grafana services are enabled and started
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    state: started
+    enabled: true
+  loop:
+    - prometheus
+    - grafana-server
+
+# When monitoring is locked to the VPN (wireguard_monitoring_locked), the
+# proxy->Grafana rule is intentionally NOT created here: the lockdown phase opens
+# Grafana to the wireguard subnet instead. Rendering the locked end-state
+# directly keeps a re-run idempotent (no ping-pong with lockdown_monitor.yml).
+- name: Allow https access from proxy
+  community.general.ufw:
+    rule: allow
+    port: "{{ prometheus_http_port | default('3000') }}"
+    src: "{{ hostvars[item]['service_ip'] | default(hostvars[item]['ansible_host']) }}"
+    proto: tcp
+    comment: "Allow access from {{ item }} instance "
+    state: enabled
+  loop: "{{ groups['web'] }}"
+  when: not (wireguard_monitoring_locked | default(false) | bool)
+
+- name: Ensure domain is properly configured
+  community.general.ini_file:
+    path: /etc/grafana/grafana.ini
+    section: server
+    option: domain
+    value: "{{ fqdn }}"
+    mode: "0640"
+  notify: Restart Grafana
+  when: fqdn is defined
+  # loop: "{{ groups['instances'] }}"
+  # when: hostvars[item]['fqdn'] is defined and hostvars[item]['fqdn'] != None and (hostvars[item]['fqdn'] | trim != "")
+
+# Sub-path serving is only used when Grafana is reached THROUGH the proxy. When
+# locked to the VPN, Grafana is reached directly, so root_url drops the /grafana
+# sub-path and serve_from_sub_path is false - the same values lockdown_monitor.yml
+# enforces, so the two phases no longer fight (idempotent re-run).
+- name: Ensure root_url is set correctly in grafana.ini
+  community.general.ini_file:
+    path: /etc/grafana/grafana.ini
+    section: server
+    option: root_url
+    value: >-
+      {{ '%(protocol)s://%(domain)s:%(http_port)s/'
+         if (wireguard_monitoring_locked | default(false) | bool)
+         else '%(protocol)s://%(domain)s:%(http_port)s/grafana' }}
+    mode: "0640"
+  notify: Restart Grafana
+
+- name: Ensure path is properly set
+  community.general.ini_file:
+    path: /etc/grafana/grafana.ini
+    section: server
+    option: serve_from_sub_path
+    value: "{{ 'false' if (wireguard_monitoring_locked | default(false) | bool) else 'true' }}"
+    mode: "0640"
+  notify: Restart Grafana
+
+- name: Prometheous scraping configs
+  ansible.builtin.blockinfile:
+    block: "{{ lookup('ansible.builtin.template', 'scrape-configs.j2') }}"
+    path: "/etc/prometheus/prometheus.yml"
+    insertafter: "scrape_configs:"
+  notify: Reload Prometheus
+
+- name: Flushing Handlers
+  ansible.builtin.meta: flush_handlers

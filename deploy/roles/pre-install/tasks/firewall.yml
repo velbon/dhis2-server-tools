@@ -1,0 +1,86 @@
+---
+- name: Checking firewall status
+  become: true
+  ansible.builtin.command: ufw status
+  changed_when: false
+  ignore_errors: true
+  register: ufw_check
+
+- name: UFW
+  ansible.builtin.debug:
+    msg:
+      - UFW is disabled !!
+      - Please enable it to continue with the setup
+      - sudo ufw limit 22   # allows ssh connections to the server
+      - sudo ufw enable   # starts and enables ufw
+  when: "'inactive' in ufw_check.stdout"
+
+- name: End play if firewall is n not enabled
+  ansible.builtin.meta: end_play
+  when: "'inactive' in ufw_check.stdout"
+
+- name: Set UFW default forward policy to ACCEPT
+  become: true
+  become_user: root
+  ansible.builtin.lineinfile:
+    dest: /etc/default/ufw
+    regexp: ^DEFAULT_FORWARD_POLICY\=
+    line: DEFAULT_FORWARD_POLICY="ACCEPT"
+  notify: Reload UFW
+
+- name: Add rules for lxd bridge
+  community.general.ufw:
+    rule: allow
+    direction: in
+    interface: "{{ lxd_bridge_interface | default('lxdbr0') }}"
+    from_ip: 0.0.0.0/0
+
+- name: Get existing LXD network forwards
+  vars:
+    ansible_connection: local
+  become: true
+  ansible.builtin.command:
+    cmd: lxc network forward list {{ lxd_bridge_interface | default('lxdbr1') }} --format json
+  register: lxd_forwards
+  changed_when: false
+  when: proxy is defined
+
+- name: Create LXD network forward for host IP
+  vars:
+    ansible_connection: local
+    _listen_addrs: "{{ lxd_forwards.stdout | from_json | map(attribute='listen_address') | list }}"
+  become: true
+  ansible.builtin.command:
+    cmd: lxc network forward create {{ lxd_bridge_interface | default('lxdbr1') }} {{ ansible_default_ipv4.address }}
+  when:
+    - proxy is defined
+    - ansible_default_ipv4.address not in _listen_addrs
+
+- name: Add HTTP and HTTPS port forwards to proxy container
+  vars:
+    ansible_connection: local
+    proxy_host: "{{ groups['web'][0] }}"
+  become: true
+  ansible.builtin.command:
+    cmd: >-
+      lxc network forward port add {{ lxd_bridge_interface | default('lxdbr1') }}
+      {{ ansible_default_ipv4.address }} tcp {{ item }}
+      {{ hostvars[proxy_host]['ansible_host'] }} {{ item }}
+  loop:
+    - "{{ hostvars[groups['web'][0]]['http_port'] | default('80') }}"
+    - "{{ hostvars[groups['web'][0]]['https_port'] | default('443') }}"
+  register: port_result
+  changed_when: port_result.rc == 0
+  failed_when: port_result.rc != 0 and 'already exists' not in port_result.stderr and 'Duplicate' not in port_result.stderr
+  when: proxy is defined
+
+- name: Remove NAT configuration from before.rules
+  vars:
+    ansible_connection: local
+  become: true
+  become_user: root
+  ansible.builtin.blockinfile:
+    path: /etc/ufw/before.rules
+    marker: "# {mark} NAT configuration"
+    state: absent
+  notify: Restart UFW

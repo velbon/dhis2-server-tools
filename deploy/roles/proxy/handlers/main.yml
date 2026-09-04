@@ -1,6 +1,5 @@
 ---
-# handlers file for ./roles/proxy
-- name: reload ufw
+- name: Reload ufw
   connection: local
   become: true
   become_user: root
@@ -8,9 +7,25 @@
     state: reloaded
 
 - name: Reload Nginx
-  connection: lxd
-  service:
+  ansible.builtin.service:
     name: nginx
     state: reloaded
-  when: inventory_hostname in groups['web']
+    enabled: true
 
+- name: Reload Apache2
+  ansible.builtin.service:
+    name: apache2
+    state: reloaded
+    enabled: true
+
+- name: Reload Openresty
+  ansible.builtin.service:
+    name: openresty
+    state: reloaded
+    enabled: true
+
+- name: Restart Openresty
+  ansible.builtin.service:
+    name: openresty
+    state: restarted
+    enabled: true

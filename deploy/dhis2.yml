@@ -1,11 +1,68 @@
 ---
-- gather_facts: False
-  force_handlers: True
-  become: True
-  hosts: all
+- name: Preparing localhost
+  hosts: 127.0.0.1
+  become: true
+  gather_facts: false
+  roles:
+    - role: pre-install
+
+- name: WireGuard VPN bring-up (early — SSH data plane)
+  ansible.builtin.import_playbook: playbooks/wireguard.yml
+  when: wireguard_data_plane | default(false) | bool
+
+- name: DHIS2 setup
+  gather_facts: false
+  force_handlers: true
+  become: true
+  hosts: all:!127.0.0.1:!{{ wireguard_hub_inventory_hostname | default('wireguard') }}
+  vars_files:
+    - vars/vars.yml
   roles:
     - role: postgres
-    - role: dhis2
+      tags: [postgresql-install]
+    - role: doris
+      tags: [doris-install]
+      # Mirrors doris_instance_map in roles/doris/tasks/main.yml - not gated
+      # on inventory group membership.
+      when: >-
+        groups['instances']
+        | map('extract', hostvars)
+        | map(attribute='apache_doris_db', default=false)
+        | select('string') | list | length > 0
     - role: proxy
+      tags: [proxy-install]
     - role: monitoring
+      tags: monitoring
+    - role: create-instance
+      tags: [create-instance]
+      when: instance_state is not defined or instance_state != 'deleted'
+  tasks:
+    - name: Install and configure unattended_upgrades
+      ansible.builtin.include_tasks: playbooks/unattended_upgrades.yml
+      when:
+        - unattended_upgrades is defined
+        - unattended_upgrades | bool
+        - instance_state is undefined
+      tags:
+        - unattended-upgrades
+  handlers:
+    - name: Handlers to restart unattended_upgrades etc
+      ansible.builtin.import_tasks: playbooks/handlers.yml
 
+- name: Creating backup script
+  hosts: databases
+  tags: backup-script
+  gather_facts: false
+  become: true
+  roles:
+    - role: backups
+
+- name: WireGuard VPN bring-up
+  ansible.builtin.import_playbook: playbooks/wireguard.yml
+  when: not (wireguard_data_plane | default(false) | bool)
+
+- name: WireGuard VPN service lockdown
+  ansible.builtin.import_playbook: playbooks/wireguard-lockdown.yml
+
+- import_playbook: playbooks/delete-dhis2-instance.yml
+  tags: [never, delete-instance]

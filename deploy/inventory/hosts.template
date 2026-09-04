@@ -1,0 +1,133 @@
+# required for connection variables to 127.0.0.1
+127.0.0.1
+ 
+# proxy
+[web]
+proxy  ansible_host=172.19.2.2  wireguard_ip=10.0.0.2
+
+
+# database hosts
+# To use SSH for a specific host instead of lxd, add ansible_connection=ssh ansible_user=<user>
+# EXAMPLE: postgres  ansible_host=192.168.1.50  ansible_connection=ssh  ansible_user=ubuntu
+# Memory tuning (all optional, unset = no limit / PostgreSQL's own defaults):
+#   lxd_memory_limit=8GB           - LXD container hard memory cap
+#   pg_shared_buffers=2GB          - ~25% of the container's memory
+#   pg_work_mem=16MB               - multiplied by pg_max_connections to size worst-case usage
+#   pg_maintenance_work_mem=1GB    - used during VACUUM/index builds/analytics table generation
+#   pg_effective_cache_size=5GB    - query planner hint, ~60-75% of the container's memory
+#   pg_max_connections=100         - lower than the 200 default on memory-constrained hosts
+[databases]
+postgres  ansible_host=172.19.2.20  wireguard_ip=10.0.0.3
+
+# dhis2 hosts
+# EXAMPLE:  dhis  ansible_host=172.19.2.11  database_host=postgres  dhis2_version=2.42  fqdn=dhis.example.org  dhis2_auto_upgrade=true  proxy_rewrite=True  apache_doris_db=doris
+# NOTE:  dhis2_auto_upgrade=true automates upgrading to the versision set in  dhis2_version=2.42
+# Memory tuning (all optional, unset = no limit / JVM's own 25%-of-visible-memory default):
+#   lxd_memory_limit=8GB   - LXD container hard memory cap
+#   heap_memory_size=5G    - Tomcat/DHIS2 JVM -Xmx/-Xms (also accepts e.g. 5120m)
+[instances]
+dhis  ansible_host=172.19.2.11  database_host=postgres  dhis2_version=2.42 proxy_rewrite=True  wireguard_ip=10.0.0.4
+
+
+# Apache Doris analytics database (optional, experimental)
+# Provisioned automatically by dhis2.yml when this group has a host. To opt
+# in: add a host below, then set apache_doris_db=<this group's hostname> on
+# the relevant [instances] host above. LXD-managed hosts only for now.
+# EXAMPLE: doris  ansible_host=172.19.2.43  lxd_memory_limit=44GB  doris_fe_heap_size=8192m  doris_be_mem_limit=32G
+[apache_doris]
+
+
+# monitoring hosts
+[monitoring]
+monitor   ansible_host=172.19.2.30  wireguard_ip=10.0.0.5
+
+# WireGuard hub container. wireguard_ip must match wireguard_server_ip.
+# Group is wireguard_hub (not wireguard) to avoid Ansible's "host and group share name" warning.
+[wireguard_hub]
+wireguard  ansible_host=172.19.2.200  wireguard_ip=10.0.0.1
+
+[backup_servers]
+backup  ansible_host=172.19.2.100
+
+# integration server/container
+[integration]
+
+# variables applying to all hosts, 
+[all:vars]
+# if you do not set fqdn, you dhis2 will be set up with selfsigned certificate
+# and server.base.url is left unset in dhis.conf
+fqdn=
+# Override the public URL written to dhis.conf (https, no trailing slash).
+# Default is https://<fqdn>[/<instance-or-dhis2_base_path>]; include :port when https_port is not 443.
+# server_base_url=https://cdn.example.org/dhis
+# required for LetsEncrypt certificate notification. 
+email=
+
+# timedatectl list-timezones to list timezones
+timezone=Africa/Nairobi
+
+# Options: lxd, ssh defaults to lxd. 
+ansible_connection=lxd
+
+# LXD host IP on the external network — auto-detected at runtime via ip route.
+# Only needed to override the auto-detected value.
+# lxd_host_ip=
+
+# PostgreSQL version to be installed
+postgresql_version=16
+
+# monitoring
+server_monitoring=munin
+app_monitoring=glowroot
+
+# WireGuard VPN: restricts Grafana, Prometheus, Munin, Glowroot and PostgreSQL to VPN-only access.
+wireguard_enabled=false
+# wireguard_data_plane=false
+
+
+# lxd
+lxd_network=172.19.2.1/24 
+lxd_bridge_interface=lxdbr1
+ansible_lxd_host={{ inventory_hostname }}
+ansible_lxd_executable=/bin/bash
+# Options: dir,zfs link: https://documentation.ubuntu.com/lxd/latest/reference/storage_drivers/ 
+lxd_storage_driver=dir 
+# Options: 22.04,24.04
+guest_os=24.04
+# Options: amd64,arm64,armhf, defaults_to amd64
+guest_os_arch=amd64 
+# lxd_source_server=
+# lxd_source_protocol=
+# lxd_storage_driver=dir
+
+
+# Options: nginx, apache2, openresty defaults to nginx
+proxy=nginx
+
+# Enable proxy_protocol if behind a reverse proxy that sends proxy protocol headers
+# use_proxy_protocol=true
+# CIDR range for trusted proxy protocol sources (defaults to lxd_network if not set)
+# proxy_protocol_trusted_cidr=172.19.2.0/24
+
+# Options: letsencrypt, customssl, selfsigned, default(letsencrypt if fqdn is defined else selfsigned )
+TLS_TYPE=letsencrypt
+
+
+# instances group variables,
+[instances:vars]
+database_host=postgres
+create_db=yes  
+# java_version is auto-detected from dhis2_version (JAVA_VERSION still works for backward compatibility)
+java_version=17 
+
+
+# NOTE: if dhis2_war_file and dhis2_version are both defined, dhis2_war_file takes precedence  
+# dhis2_war_file="https://releases.dhis2.org/40/dhis2-stable-40.4.0.war"
+# dhis2_war_file=/full/path/dhis2.war
+dhis2_version=2.40
+
+
+# whether dhis2 should be upgraded automatically to the latest defined version. 
+dhis2_auto_upgrade=false
+unattended_upgrades=yes
+
