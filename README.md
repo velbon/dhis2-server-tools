@@ -324,3 +324,47 @@ At this point you should have DHIS2 up and running.
 - [LXC container management](./docs/Basic-LXC-container-Management.md)
 - [Service management with systemctl](./docs/Systemd-Service-Management.md)
 - [SSH connection](./docs/SSH-Connection.md)
+
+## Current Deployment: epi.riah.dev
+This section documents the live configuration of the instance deployed from this checkout, for operators maintaining this specific server. It is derived from `deploy/inventory/hosts` and verified against the running system.
+
+### Architecture
+Single-server LXD deployment (`ansible_connection=lxd`) on Ubuntu 24.04, `lxd_network=172.19.2.1/24` on `lxdbr1`.
+
+| Container  | Role                    | Internal IP   | Key ports                      |
+|------------|-------------------------|---------------|---------------------------------|
+| `proxy`    | Apache2 reverse proxy   | 172.19.2.2    | 80 (HTTP→HTTPS redirect), 443 (TLS) |
+| `postgres` | PostgreSQL 16           | 172.19.2.20   | 5432 (internal only)            |
+| `dhis`     | DHIS2 2.40 on Tomcat 10 | 172.19.2.11   | 8080 (app, proxied at `/dhis`), 4000 (Glowroot APM, proxied at `/dhis-glowroot`) |
+| `monitor`  | Munin server            | 172.19.2.30   | web UI proxied at `/munin`, node port 4949 |
+
+### Configuration highlights (`deploy/inventory/hosts`)
+- `fqdn=epi.riah.dev`, `TLS_TYPE=letsencrypt` — public TLS certificate issued via certbot, auto-renewal cronjob installed.
+- `proxy=apache2`.
+- `dhis2_version=2.40`, `java_version=17`, `dhis2_auto_upgrade=false` — upgrades must be applied manually by bumping `dhis2_version` and re-running `deploy.sh`.
+- `postgresql_version=16`.
+- `server_monitoring=munin`, `app_monitoring=glowroot`.
+- `wireguard_enabled=false` — Munin, Glowroot, and PostgreSQL are reachable without a VPN hop (mitigated by UFW rules and container network isolation; see recommendations below).
+- `unattended_upgrades=yes` — OS package security updates are applied automatically inside the `dhis` container.
+
+### Host firewall (UFW)
+- Default policy: deny incoming, allow outgoing/routed.
+- SSH has been moved from port 22 to **port 822** (`Port 822` in `/etc/ssh/sshd_config`), rate-limited via `ufw limit`.
+- Traffic on `lxdbr1` (container bridge) is allowed, so inter-container communication (proxy → dhis → postgres) works.
+- Port `4949/tcp` (Munin node) is restricted to the `monitor` container's IP only.
+- Ports 80/443 are opened on the `proxy` container via the LXD network forward created by the `pre-install` role.
+
+### Access endpoints
+- DHIS2: `https://epi.riah.dev/dhis`
+- Glowroot APM: `https://epi.riah.dev/dhis-glowroot`
+- Munin: `https://epi.riah.dev/munin`
+
+### Security recommendations
+1. **Rotate the default DHIS2 admin credentials immediately.** The `admin` / `district` login is currently active and was used to run this deployment's smoke test — treat it as compromised and change it via the DHIS2 UI or `/api/me` password-change endpoint.
+2. **Do not re-expose SSH on port 22.** It's already moved to 822; keep it there and avoid adding a duplicate `Port 22` line in `/etc/ssh/sshd_config` or an `sshd_config.d/*.conf` drop-in, since OpenSSH honors the first `Port` directive found.
+3. **Enable WireGuard (`wireguard_enabled=true`)** to restrict Munin, Glowroot, and PostgreSQL to VPN-only access instead of relying solely on UFW rules — this removes an entire class of exposure if a UFW rule is ever misconfigured.
+4. **Restrict or authenticate Munin/Glowroot** at the Apache layer if WireGuard is not enabled, since both expose operational/internal detail.
+5. **Confirm `sshd -t` passes and `sshd` was reloaded** after any manual edits to `sshd_config` (e.g. via `nano`) — edits alone don't take effect until the service is restarted.
+6. **Review `pg_hba.conf`** on `postgres` periodically; the deploy only opens access from the `dhis` instance, but confirm no broader entries have been added over time.
+7. **Keep `dhis2_auto_upgrade=false` intentional** — since it's off, DHIS2 patch releases (including security fixes) require a manual `dhis2_version` bump and re-deploy; track upstream release notes.
+8. **Verify Let's Encrypt renewal** (`certbot renew --dry-run` on `proxy`) periodically even though a cronjob is installed, to catch silent renewal failures before certificate expiry.
